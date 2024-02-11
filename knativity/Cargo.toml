@@ -1,0 +1,13 @@
+[package]
+name = "knativity"
+license = "Apache-2.0"
+repository = "https://codeberg.org/ikaros/knativity"
+documentation = "https://docs.rs/knativity"
+description = "Unofficial Rust SDK for Knative"
+
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+readme.workspace = true
+
+[dependencies]
