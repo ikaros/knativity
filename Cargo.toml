@@ -9,3 +9,13 @@ rust-version = "1.75"
 authors = ["Konstantin-Ikaros Kanellopoulos"]
 readme = "README.md"
 keywords = ["knative", "sdk", "kubernetes"]
+
+[workspace.dependencies]
+async-trait = "0.1"
+cloudevents-sdk = { version = "0.7", features = ["http-binding", "hyper", "http-body"] }
+http = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+url = "2"
