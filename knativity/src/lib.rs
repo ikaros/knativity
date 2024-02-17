@@ -23,11 +23,13 @@
 //! Chances are high that if you are reading this, we might have the same problem to fix.
 //!
 //! # Versioning
-//! Please condider everything `0.0.*` as extremely unstable and not ready for production use.
+//! Please consider everything `0.0.*` as extremely unstable and absolutely not ready for production use.
 //!
 //! # Roadmap
-//! - [ ] Serving (in progress)
 //! - [ ] Eventing
+//!   - [ ] Client. Sending Events. (in progress)
+//!   - [ ] Sink. Receiving Events.
+//! - [ ] Serving
 
 pub mod eventing;
 pub mod serving;

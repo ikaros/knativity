@@ -15,10 +15,12 @@ async-trait.workspace = true
 http.workspace = true
 thiserror.workspace = true
 url.workspace = true
+tracing.workspace = true
 
 cloudevents-sdk = { workspace = true, features = ["reqwest"] }
 
 reqwest = "0.11"
+backoff = "0.4.0"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
