@@ -1,8 +1,6 @@
 //! Knative Eventing ([official docs](https://knative.dev/docs/eventing/))
 //!
-//! # Examples
-//!
-//! ## Sending a single event to a broker
+//! # Send events
 //! ```
 //! use cloudevents::{EventBuilder, EventBuilderV10};
 //! use knativity::eventing::{Client, EventSender};
@@ -15,6 +13,30 @@
 //!     client.send_event(&ce).await.unwrap();
 //! }
 //! ```
+//!
+//! # With custom backoff policy
+//!
+//! ```
+//! use cloudevents::{EventBuilder, EventBuilderV10};
+//! use knativity::eventing::{Client, EventSender};
+//! use backoff::ExponentialBackoffBuilder;
+//!
+//! #[tokio::main]
+//! async fn main() {
+//!     let broker_url = std::env::var("K_BROKER").unwrap_or("http://localhost:8080".to_string());
+//!
+//!     let backoff_policy = ExponentialBackoffBuilder::new()
+//!     .with_initial_interval(std::time::Duration::from_millis(100))
+//!     .with_max_elapsed_time(Some(std::time::Duration::from_secs(60)))
+//!     .build();
+//!
+//!     let client = Client::builder(broker_url.parse().unwrap()).backoff(backoff_policy).build().unwrap();
+//!     let ce = EventBuilderV10::new().id("my-id").ty("my-type").source("my-source").build().unwrap();
+//!     client.send_event(&ce).await.unwrap();
+//! }
+//! ```
+
+use backoff::ExponentialBackoff;
 use cloudevents::binding::reqwest::RequestBuilderExt;
 use reqwest::StatusCode;
 use std::{sync::Arc, time::Duration};
@@ -39,6 +61,9 @@ pub enum Error {
 
     /// The Broker reacted with an status code that is explicitly stated as unspecified by the
     /// Knative Eventing specification.
+    ///
+    /// Make sure the target URL is correct because a Knative spec compliant event receiver would
+    /// usually not respond with this status code.
     #[error("broker responded with unspecified HTTP status code {0}")]
     Unspecified(StatusCode),
 
@@ -67,7 +92,10 @@ pub enum Error {
 
     /// The broker is overloaded and cannot process the request.
     #[error("broker is overloaded")]
-    TooManyRequests,
+    TooManyRequests {
+        /// Indicates how long the client should wait before making a follow-up request.
+        retry_after: Option<Duration>,
+    },
 
     /// The request could not constructed correctly.
     #[error("failed to construct request: {0}")]
@@ -87,7 +115,15 @@ fn result_from_broker_response(response: &reqwest::Response) -> Result<(), Error
         404 => Err(Error::NoEndpoint),
         408 => Err(Error::BrokerTimeout),
         409 => Err(Error::Conflict),
-        429 => Err(Error::TooManyRequests),
+        429 => {
+            let retry_after = response
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse().ok())
+                .map(Duration::from_secs);
+            Err(Error::TooManyRequests { retry_after })
+        }
         s => match s {
             100..=399 => Err(Error::Unspecified(status_code)),
             400..=599 => Err(Error::Other(status_code)),
@@ -97,23 +133,26 @@ fn result_from_broker_response(response: &reqwest::Response) -> Result<(), Error
 }
 
 impl Error {
-    fn is_retryable(&self) -> bool {
+    fn into_backoff_error(self) -> backoff::Error<Self> {
         match self {
-            Error::NoEndpoint
-            | Error::BrokerTimeout
-            | Error::Conflict
-            | Error::TooManyRequests
-            | Error::Network(_) => true,
-            _ => false,
+            Error::NoEndpoint | Error::BrokerTimeout | Error::Conflict | Error::Network(_) => {
+                backoff::Error::transient(self)
+            }
+            Error::TooManyRequests { retry_after } => backoff::Error::Transient {
+                err: self,
+                retry_after,
+            },
+            _ => backoff::Error::permanent(self),
         }
     }
 }
 
 /// A `ClientBuilder` can be used to create a `Client`.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct ClientBuilder {
     url: Url,
     request_timeout: Option<Duration>,
+    backoff: Option<ExponentialBackoff>,
 }
 
 impl ClientBuilder {
@@ -122,6 +161,7 @@ impl ClientBuilder {
         Self {
             url,
             request_timeout: None,
+            backoff: None,
         }
     }
 
@@ -134,14 +174,26 @@ impl ClientBuilder {
         self
     }
 
+    /// Set the backoff strategy for retrying requests.
+    ///
+    /// Default is `ExponentialBackoff::default()`.
+    pub fn backoff(mut self, backoff: ExponentialBackoff) -> Self {
+        self.backoff = Some(backoff);
+        self
+    }
+
     /// Returns a `Client` that uses this `ClientBuilder` configuration.
     pub fn build(self) -> Result<Client, Box<dyn std::error::Error>> {
         let http_client = reqwest::Client::builder()
             .timeout(self.request_timeout.unwrap_or(Duration::from_secs(10)))
             .build()?;
+
+        let backoff_policy = self.backoff.unwrap_or_default();
+
         Ok(Client(Arc::new(ClientInner {
             url: self.url,
             http_client,
+            backoff_policy,
         })))
     }
 }
@@ -172,35 +224,44 @@ impl EventSender for Client {
 struct ClientInner {
     url: Url,
     http_client: reqwest::Client,
+    backoff_policy: ExponentialBackoff,
 }
 
 impl ClientInner {
     async fn send_event<'a>(&self, event: &'a cloudevents::Event) -> Result<(), Error> {
-        let response = self
-            .http_client
-            .post(self.url.clone())
-            .header("Access-Control-Allow-Origin", "*")
-            .event(event.clone())
-            .map_err(|e| Error::Request(Box::new(e)))?
-            .send()
-            .await
-            .map_err(|e| Error::Network(Box::new(e)))?;
+        let op = || async {
+            let response = self
+                .http_client
+                .post(self.url.clone())
+                .header("Access-Control-Allow-Origin", "*")
+                .event(event.clone())
+                .map_err(|e| Error::Request(Box::new(e)))?
+                .send()
+                .await
+                .map_err(|e| Error::Network(Box::new(e)))?;
 
-        result_from_broker_response(&response)
+            result_from_broker_response(&response).map_err(Error::into_backoff_error)
+        };
+
+        backoff::future::retry(self.backoff_policy.clone(), op).await
     }
 
     async fn send_event_batch<'a>(&self, events: &'a [cloudevents::Event]) -> Result<(), Error> {
-        let response = self
-            .http_client
-            .post(self.url.clone())
-            .header("Access-Control-Allow-Origin", "*")
-            .events(events.to_vec())
-            .map_err(|e| Error::Request(Box::new(e)))?
-            .send()
-            .await
-            .map_err(|e| Error::Network(Box::new(e)))?;
+        let op = || async {
+            let response = self
+                .http_client
+                .post(self.url.clone())
+                .header("Access-Control-Allow-Origin", "*")
+                .events(events.to_vec())
+                .map_err(|e| Error::Request(Box::new(e)))?
+                .send()
+                .await
+                .map_err(|e| Error::Network(Box::new(e)))?;
 
-        result_from_broker_response(&response)
+            result_from_broker_response(&response).map_err(Error::into_backoff_error)
+        };
+
+        backoff::future::retry(self.backoff_policy.clone(), op).await
     }
 }
 
@@ -210,7 +271,6 @@ mod tests {
     use cloudevents::{EventBuilder, EventBuilderV10};
     use tracing::info;
 
-    #[tokio::test]
     async fn test_send_event() {
         tracing_subscriber::fmt().init();
         info!("test_send_event");

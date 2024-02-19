@@ -20,14 +20,17 @@
 //! progress and get a better grip on the best approach I will start to build this crate in
 //! parallel
 //!
-//! Chances are high that if you are reading this, we might have the same problem to fix.
-//!
 //! # Versioning
 //! Please consider everything `0.0.*` as extremely unstable and absolutely not ready for production use.
 //!
 //! # Roadmap
 //! - [ ] Eventing
-//!   - [ ] Client. Sending Events. (in progress)
+//!   - [ ] [`Client`](eventing::Client)
+//!     - [x] Sending Events
+//!     - [x] Retry with backoff
+//!     - [ ] circuit breaker
+//!     - [ ] tracing logs
+//!     - [ ] opentelemetry
 //!   - [ ] Sink. Receiving Events.
 //! - [ ] Serving
 
