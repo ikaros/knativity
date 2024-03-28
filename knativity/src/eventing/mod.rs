@@ -107,6 +107,9 @@ pub enum Error {
     Other(StatusCode),
 }
 
+/// This function is the SSOT to interpretes a broker response according to Knative documentation.
+///
+/// Should stay private to preserve flexibility in solution design.
 fn result_from_broker_response(response: &reqwest::Response) -> Result<(), Error> {
     let status_code = response.status();
     match status_code.as_u16() {
@@ -133,6 +136,7 @@ fn result_from_broker_response(response: &reqwest::Response) -> Result<(), Error
 }
 
 impl Error {
+    /// Converts the error into a backoff error.
     fn into_backoff_error(self) -> backoff::Error<Self> {
         match self {
             Error::NoEndpoint | Error::BrokerTimeout | Error::Conflict | Error::Network(_) => {
@@ -150,8 +154,17 @@ impl Error {
 /// A `ClientBuilder` can be used to create a `Client`.
 #[derive(Clone)]
 pub struct ClientBuilder {
+    /// I chose to use URL so that the client doesn't fail due to a invalid URL at runtime.
     url: Url,
+
+    /// There will be a reasonable default if no value is provided to the builder.
+    ///
+    /// I never encountered that having no timeout defined helped a system in any way.
+    /// So having a default to be applied (and documented) is slightly less worse than having no timeout at all.
+    /// Though maybe I should make setting `None` availabe by the API for cases I don't anticipate yet.
     request_timeout: Option<Duration>,
+
+    /// The backoff strategy for retrying requests.
     backoff: Option<ExponentialBackoff>,
 }
 
@@ -169,8 +182,8 @@ impl ClientBuilder {
     /// response body has finished.
     ///
     /// Default is 10 seconds.
-    pub fn request_timeout(mut self, timout: Duration) -> Self {
-        self.request_timeout = Some(timout);
+    pub fn request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_timeout = Some(timeout);
         self
     }
 
@@ -221,13 +234,22 @@ impl EventSender for Client {
     }
 }
 
+/// I chose to use an inner struct to achieve the same ergonomics as the reqwest::Client.
 struct ClientInner {
+    /// URL is used so that the client doesn't fail due to a invalid URL at runtime.
     url: Url,
+
+    /// The http_client is not accesable from the API nor can be given from the outside. While this
+    /// reduces potential flexibility, it preserves a lot of flexibility for later improvements.
     http_client: reqwest::Client,
+
+    /// The backoff policy for retrying requests.
     backoff_policy: ExponentialBackoff,
 }
 
 impl ClientInner {
+    /// I'm not quite sure if its the best decission to provide the event as &T. Maybe later benchmarks
+    /// will help to refine this decision.
     async fn send_event<'a>(&self, event: &'a cloudevents::Event) -> Result<(), Error> {
         let op = || async {
             let response = self
@@ -246,6 +268,8 @@ impl ClientInner {
         backoff::future::retry(self.backoff_policy.clone(), op).await
     }
 
+    /// I'm not quite sure if its the best decission to provide the event as &[T]. Maybe later benchmarks
+    /// will help to refine this decision.
     async fn send_event_batch<'a>(&self, events: &'a [cloudevents::Event]) -> Result<(), Error> {
         let op = || async {
             let response = self
@@ -271,6 +295,7 @@ mod tests {
     use cloudevents::{EventBuilder, EventBuilderV10};
     use tracing::info;
 
+    #[tokio::test]
     async fn test_send_event() {
         tracing_subscriber::fmt().init();
         info!("test_send_event");

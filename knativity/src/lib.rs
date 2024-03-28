@@ -5,7 +5,7 @@
     clippy::indexing_slicing,
     clippy::cognitive_complexity
 )]
-#![warn(missing_docs)]
+#![warn(missing_docs, clippy::missing_docs_in_private_items)]
 #![doc(test(
     no_crate_inject,
     attr(deny(warnings, rust_2018_idioms), allow(dead_code, unused_variables))
